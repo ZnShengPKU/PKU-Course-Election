@@ -1,0 +1,94 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Streamlit
+.streamlit/secrets.toml
+.streamlit/config.toml
+
+# Data files - 根据需要调整
+*.xlsx
+*.xls
+*.parquet
+courses.parquet
+课表信息汇总.xlsx
+courses.xlsx
+
+# 如果需要提交示例数据，可以用 ! 来排除特定文件
+# !sample_data.xlsx
+
+# Logs
+*.log
+streamlit.log
+streamlit.error.log
+memory.log
+
+# Test reports
+stress_test_report_*.txt
+
+# Temporary files
+*.tmp
+*.bak
+*.backup
+.cache/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Environment variables
+.env
+.env.local
+
+# Coverage reports
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+
+# pytest
+.pytest_cache/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+

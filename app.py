@@ -126,17 +126,23 @@ LANGUAGES = {
     }
 }
 
+@st.cache_data(ttl=3600)  # Cache for 1 hour
 def load_data():
-    """Load course data from Excel file or generate sample data"""
+    """Load course data from Parquet/Excel file with caching"""
+    # Try Parquet first (10x faster)
     try:
-        # Try to load the Excel file
+        df = pd.read_parquet("courses.parquet")
+        return df
+    except FileNotFoundError:
+        pass
+    
+    # Fallback to Excel
+    try:
         df = pd.read_excel("courses.xlsx")
     except FileNotFoundError:
         try:
-            # Try the Chinese-named file
             df = pd.read_excel("课表信息汇总.xlsx")
         except FileNotFoundError:
-            # Return None if no file found
             return None
     
     # Process the data according to requirements
@@ -145,7 +151,6 @@ def load_data():
     
     processed_data = []
     for _, group in grouped:
-        # Get the first row as base
         row = group.iloc[0].copy()
         
         # Concatenate Target Audience (修读对象)
@@ -154,7 +159,15 @@ def load_data():
         
         processed_data.append(row)
     
-    return pd.DataFrame(processed_data)
+    processed_df = pd.DataFrame(processed_data)
+    
+    # Auto-save as Parquet for next time
+    try:
+        processed_df.to_parquet("courses.parquet", compression='snappy', index=False)
+    except Exception:
+        pass  # Silently fail if can't save
+    
+    return processed_df
 
 def generate_sample_data():
     """Generate sample course data for demonstration"""
@@ -188,9 +201,21 @@ def generate_sample_data():
     }
     return pd.DataFrame(sample_data)
 
+@st.cache_data
+def preprocess_course_times(df):
+    """预处理所有课程的时间信息，避免重复解析"""
+    if df is None or df.empty:
+        return df
+    
+    # 为DataFrame添加解析后的时间列
+    df_copy = df.copy()
+    df_copy['_parsed_time'] = df_copy['上课时间'].apply(lambda x: parse_time(x) if pd.notna(x) else [])
+    return df_copy
+
+@st.cache_data
 def parse_time(time_str):
     """
-    Parse time string into structured data
+    Parse time string into structured data (cached version)
     Format examples:
     - "周一1-2" (Every week)
     - "周二1-2单" (Odd weeks only)
@@ -244,6 +269,7 @@ def parse_time(time_str):
 def check_conflict(new_course_time, selected_courses):
     """
     Check if there's a time conflict between new course and selected courses
+    Optimized with early exit strategy
     Conflict occurs when:
     - Same day
     - Overlapping periods
@@ -251,28 +277,43 @@ def check_conflict(new_course_time, selected_courses):
     """
     new_time_slots = parse_time(new_course_time)
     
+    # Early exit if no time slots
+    if not new_time_slots:
+        return None
+    
     for course in selected_courses:
         existing_time_slots = parse_time(course['上课时间'])
         
+        # Early exit if no existing time slots
+        if not existing_time_slots:
+            continue
+        
         for new_slot in new_time_slots:
             for existing_slot in existing_time_slots:
-                # Check if same day
-                if new_slot['day'] == existing_slot['day']:
-                    # Check if periods overlap
-                    if (new_slot['start_period'] <= existing_slot['end_period'] and 
+                # Check if same day (early exit if not)
+                if new_slot['day'] != existing_slot['day']:
+                    continue
+                
+                # Check if periods overlap (early exit if not)
+                if not (new_slot['start_period'] <= existing_slot['end_period'] and 
                         new_slot['end_period'] >= existing_slot['start_period']):
-                        # Check if weeks overlap
-                        # No conflict if one is odd and the other is even
-                        if not ((new_slot['week_type'] == 'odd' and existing_slot['week_type'] == 'even') or
-                                (new_slot['week_type'] == 'even' and existing_slot['week_type'] == 'odd')):
-                            return course['课程名']  # Return conflicting course name
+                    continue
+                
+                # Check if weeks overlap
+                # No conflict if one is odd and the other is even
+                if (new_slot['week_type'] == 'odd' and existing_slot['week_type'] == 'even') or \
+                   (new_slot['week_type'] == 'even' and existing_slot['week_type'] == 'odd'):
+                    continue
+                
+                # Conflict detected - return immediately
+                return course['课程名']
     
     return None  # No conflict
 
 def create_timetable(selected_courses, lang):
-    """Create timetable visualization"""
+    """Create timetable visualization (optimized with cached time parsing)"""
     # Initialize timetable matrix (7 days x 12 periods) - Mon-Sun as requested
-    days = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']  # Added sat and sun as requested
+    days = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
     day_names = {
         'mon': lang["week_mon"], 'tue': lang["week_tue"], 'wed': lang["week_wed"],
         'thu': lang["week_thu"], 'fri': lang["week_fri"], 'sat': lang["week_sat"], 
@@ -285,7 +326,12 @@ def create_timetable(selected_courses, lang):
     
     # Fill timetable with selected courses
     for course in selected_courses:
-        time_slots = parse_time(course['上课时间'])
+        # Use cached parsed time if available
+        if isinstance(course, dict) and '_parsed_time' in course:
+            time_slots = course['_parsed_time']
+        else:
+            time_slots = parse_time(course['上课时间'])
+        
         for slot in time_slots:
             day = slot['day']
             week_type = slot['week_type']
@@ -357,6 +403,13 @@ def main():
     
     st.title(lang["app_title"])
     
+    # Add cache clear button in sidebar
+    with st.sidebar:
+        if st.button("🔄 " + ("清除缓存" if language == "zh" else "Clear Cache")):
+            st.cache_data.clear()
+            st.success("✓ " + ("缓存已清除" if language == "zh" else "Cache cleared"))
+            st.rerun()
+    
     # Load data
     df = load_data()
     
@@ -378,6 +431,9 @@ def main():
         if df is None:
             st.stop()
     
+    # Preprocess time data once (cached)
+    df = preprocess_course_times(df)
+    
     # Initialize session state
     if 'selected_courses' not in st.session_state:
         st.session_state.selected_courses = []
@@ -387,6 +443,18 @@ def main():
     
     if 'degree_type' not in st.session_state:
         st.session_state.degree_type = "single"  # single or double
+    
+    # Cache for filtered dataframe
+    if 'filter_cache_key' not in st.session_state:
+        st.session_state.filter_cache_key = None
+    if 'filter_cache_df' not in st.session_state:
+        st.session_state.filter_cache_df = None
+    
+    # Cache for timetable
+    if 'timetable_cache' not in st.session_state:
+        st.session_state.timetable_cache = None
+    if 'timetable_courses_hash' not in st.session_state:
+        st.session_state.timetable_courses_hash = None
     
     # Sidebar controls
     st.sidebar.header(lang["user_department"])
@@ -414,16 +482,9 @@ def main():
     current_credits = sum(float(course.get('参考学分', 0)) for course in st.session_state.selected_courses)
     
     # Filter courses based on user department and target audience
-    filtered_df = df.copy()
-    
-    # Apply visibility logic: 
-    # If Course Department ≠ User Department AND Target Audience does NOT contain "全校学生在籍", hide course
-    def should_show_course(row):
-        course_dept = row['院系']
-        target_audience = str(row.get('修读对象', ''))
-        return course_dept == user_dept or '全校学生在籍' in target_audience
-    
-    filtered_df = filtered_df[filtered_df.apply(should_show_course, axis=1)]
+    # Use vectorized operations for better performance
+    mask = (df['院系'] == user_dept) | df['修读对象'].fillna('').str.contains('全校学生在籍', na=False)
+    filtered_df = df[mask].copy()
     
     # Additional filters
     st.sidebar.header("Filters")
@@ -462,7 +523,16 @@ def main():
     
     # Display courses table with select buttons properly aligned
     if not page_courses.empty:
-        # Removed the "X courses per page" text
+        # Add header row
+        header_cols = st.columns([1, 2, 1, 1, 1, 2, 1])
+        header_cols[0].markdown(f"**{lang['department']}**")
+        header_cols[1].markdown(f"**{lang['course_name']}**")
+        header_cols[2].markdown(f"**{lang['class_id']}**")
+        header_cols[3].markdown(f"**{lang['credits']}**")
+        header_cols[4].markdown(f"**{lang['instructor']}**")
+        header_cols[5].markdown(f"**{lang['time']}**")
+        header_cols[6].markdown(f"**{lang['select']}**")
+        st.divider()
         
         # Create a container for each course with properly aligned select button
         for idx, (_, row) in enumerate(page_courses.iterrows()):
@@ -484,8 +554,12 @@ def main():
                     if conflict_course:
                         st.toast(f"❌ {lang['conflict_detected']} {conflict_course}", icon='⚠️')
                     else:
-                        # Add course to selected courses
-                        st.session_state.selected_courses.append(row.to_dict())
+                        # Add course to selected courses (convert to dict once)
+                        course_dict = row.to_dict()
+                        # Preserve parsed time if available
+                        if '_parsed_time' in row:
+                            course_dict['_parsed_time'] = row['_parsed_time']
+                        st.session_state.selected_courses.append(course_dict)
                         st.toast(f"✅ {lang['no_conflict']}", icon='🎉')
                         st.rerun()
                 
@@ -499,7 +573,18 @@ def main():
     
     # Create and display timetable
     if st.session_state.selected_courses:
-        timetable, day_names = create_timetable(st.session_state.selected_courses, lang)
+        # Check if we can use cached timetable
+        courses_hash = hash(str([(c['课程号'], c['班号']) for c in st.session_state.selected_courses]))
+        
+        if (st.session_state.timetable_courses_hash == courses_hash and 
+            st.session_state.timetable_cache is not None):
+            # Use cached timetable
+            timetable, day_names = st.session_state.timetable_cache
+        else:
+            # Generate new timetable and cache it
+            timetable, day_names = create_timetable(st.session_state.selected_courses, lang)
+            st.session_state.timetable_cache = (timetable, day_names)
+            st.session_state.timetable_courses_hash = courses_hash
         
         # Always show periods 1-12
         periods = list(range(1, 13))
