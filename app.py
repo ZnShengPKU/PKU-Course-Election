@@ -389,7 +389,7 @@ def export_timetable_to_excel(selected_courses, lang):
     return output
 
 def main():
-    st.set_page_config(page_title="北京大学模拟选课", layout="wide")
+    st.set_page_config(page_title="模拟选课", layout="wide")
     
     # Custom CSS to reduce row height and spacing for a more compact view
     st.markdown("""
@@ -652,7 +652,7 @@ def main():
     # Course name search
     course_search = st.sidebar.text_input(lang["search_course"], on_change=reset_page_callback)
     if course_search:
-        filtered_df = filtered_df[filtered_df['课程名'].str.contains(course_search, case=False, na=False)]
+        filtered_df = filtered_df[filtered_df['课程名'].str.contains(course_search, case=False, na=False, regex=False)]
     
  # --- Pagination Logic ---
     courses_per_page = 10
@@ -747,7 +747,21 @@ def main():
                             st.toast(f"✅ {lang['no_conflict']}", icon='🎉')
                             st.rerun()
     else:
-        st.info(lang["all_courses"])
+        # Custom styled message for no matching courses
+        message_text = "No matching courses found" if language == "en" else "无符合条件的课程"
+        st.markdown(f'''
+        <div style="
+            background-color: rgba(28, 131, 225, 0.1);
+            color: rgb(0, 66, 128);
+            padding: 20px;
+            border-radius: 0.5rem;
+            border: 1px solid rgba(28, 131, 225, 0.1);
+            text-align: center;
+            margin-top: 10px;
+            margin-bottom: 10px;">
+            {message_text}
+        </div>
+        ''', unsafe_allow_html=True)
     
     # Define a helper to generate the HTML timetable
     def get_timetable_html(timetable, day_names):
