@@ -43,6 +43,7 @@ LANGUAGES = {
         "select": "Select",
         "cancel": "Cancel",
         "user_department": "User Department",
+        "second_department": "Second Department",
         "degree_type": "Degree Type",
         "single_degree": "Single Degree (Max 25 Credits)",
         "double_degree": "Double Degree (Max 30 Credits)",
@@ -89,6 +90,7 @@ LANGUAGES = {
         "select": "选课",
         "cancel": "取消",
         "user_department": "用户所在院系",
+        "second_department": "第二学位院系",
         "degree_type": "学位类型",
         "single_degree": "单学位（最多25学分）",
         "double_degree": "双学位（最多30学分）",
@@ -604,14 +606,28 @@ def main():
         format_func=lambda x: lang["single_degree"] if x == "single" else lang["double_degree"]
     )
     
+    # Second department selection for double degree students
+    second_dept = None
+    if degree_type == "double":
+        # Filter out the user's primary department from the options
+        second_dept_options = [dept for dept in departments if dept != user_dept]
+        second_dept = st.sidebar.selectbox(
+            lang["second_department"],
+            options=second_dept_options,
+            key="second_dept_select"
+        )
+    
     max_credits = 25 if degree_type == "single" else 30
     
     # Calculate current credits
     current_credits = sum(float(course.get('参考学分', 0)) for course in st.session_state.selected_courses)
     
     # Filter courses based on user department and target audience
-    # Use vectorized operations for better performance
-    mask = (df['院系'] == user_dept) | df['修读对象'].fillna('').str.contains('全校学生在籍', na=False)
+    # For double degree students, also include courses from their second department
+    if degree_type == "double" and second_dept:
+        mask = (df['院系'] == user_dept) | (df['院系'] == second_dept) | df['修读对象'].fillna('').str.contains('全校学生在籍', na=False)
+    else:
+        mask = (df['院系'] == user_dept) | df['修读对象'].fillna('').str.contains('全校学生在籍', na=False)
     filtered_df = df[mask].copy()
     
     # Additional filters
