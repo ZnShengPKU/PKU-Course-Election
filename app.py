@@ -649,11 +649,11 @@ def main():
     if dept_filter != lang["all_departments"]:
         filtered_df = filtered_df[filtered_df['院系'] == dept_filter]
     
-    # Course name search
-    course_search = st.sidebar.text_input(lang["search_course"], on_change=reset_page_callback)
+    # Course name search (Moved to main page)
+    course_search = st.text_input(lang["search_course"], on_change=reset_page_callback)
     if course_search:
         filtered_df = filtered_df[filtered_df['课程名'].str.contains(course_search, case=False, na=False, regex=False)]
-    
+
  # --- Pagination Logic ---
     courses_per_page = 10
     total_courses = len(filtered_df)
