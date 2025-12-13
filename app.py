@@ -588,9 +588,6 @@ def main():
     if 'selected_courses' not in st.session_state:
         st.session_state.selected_courses = []
     
-    if 'user_department' not in st.session_state:
-        st.session_state.user_department = ""
-    
     if 'degree_type' not in st.session_state:
         st.session_state.degree_type = "single"  # single or double
     
@@ -601,17 +598,9 @@ def main():
         st.session_state.timetable_courses_hash = None
     
     # Sidebar controls
-    st.sidebar.header(lang["user_department"])
     
     # Get unique departments
     departments = sorted(df['院系'].unique())
-    
-    # User department selection
-    user_dept = st.sidebar.selectbox(
-        lang["user_department"],
-        options=departments,
-        key="user_dept_select"
-    )
     
     # Degree type selection
     degree_type = st.sidebar.radio(
@@ -623,8 +612,8 @@ def main():
     # Second department selection for double degree students
     second_dept = None
     if degree_type == "double":
-        # Filter out the user's primary department from the options
-        second_dept_options = [dept for dept in departments if dept != user_dept]
+        # Show all departments for double degree students
+        second_dept_options = departments
         second_dept = st.sidebar.selectbox(
             lang["second_department"],
             options=second_dept_options,
@@ -636,13 +625,8 @@ def main():
     # Calculate current credits
     current_credits = sum(float(course.get('参考学分', 0)) for course in st.session_state.selected_courses)
     
-    # Filter courses based on user department and target audience
-    # For double degree students, also include courses from their second department
-    if degree_type == "double" and second_dept:
-        mask = (df['院系'] == user_dept) | (df['院系'] == second_dept) | df['修读对象'].fillna('').str.contains('全校学生在籍', na=False)
-    else:
-        mask = (df['院系'] == user_dept) | df['修读对象'].fillna('').str.contains('全校学生在籍', na=False)
-    filtered_df = df[mask].copy()
+    # Show all courses by default
+    filtered_df = df.copy()
     
     # Additional filters
     st.sidebar.header("Filters")
