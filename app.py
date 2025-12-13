@@ -419,12 +419,26 @@ def main():
             border: 1px solid rgba(255, 255, 255, 0.2) !important;
         }
         
-        /* Make text input fields compact to match button height */
-        div[data-baseweb="input"] > div, div[data-baseweb="input"] input {
-            min-height: 30px !important;
-            height: 30px !important;
-            padding: 0px 8px !important;
-            font-size: 14px !important;
+        /* Optimized input style: separate container and internal input for vertical centering */
+        
+        /* 1. Outer container: slightly increase height and use flex to force vertical centering */
+        div[data-baseweb="input"] > div {
+            min-height: 36px !important; /* Increased from 30px to 36px for better visuals */
+            height: 36px !important;
+            padding: 0px !important;
+            display: flex !important;
+            align-items: center !important; /* Key: enforces vertical centering */
+            border-radius: 5px !important;
+        }
+        
+        /* 2. Internal Input element: fill container, adjust font size */
+        div[data-baseweb="input"] input {
+            min-height: 100% !important;
+            height: 100% !important;
+            padding: 0px 10px !important; /* Keep horizontal padding only */
+            font-size: 16px !important;   /* Increased from 14px to 16px */
+            line-height: normal !important; /* Reset line-height, let flex handle alignment */
+            margin: 0px !important;
         }
         
         /* Reduce padding in markdown text elements */
