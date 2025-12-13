@@ -611,14 +611,6 @@ def main():
     
     # Second department selection for double degree students
     second_dept = None
-    if degree_type == "double":
-        # Show all departments for double degree students
-        second_dept_options = departments
-        second_dept = st.sidebar.selectbox(
-            lang["second_department"],
-            options=second_dept_options,
-            key="second_dept_select"
-        )
     
     max_credits = 25 if degree_type == "single" else 30
     
