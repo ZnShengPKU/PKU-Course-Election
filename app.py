@@ -29,6 +29,7 @@ import numpy as np
 from collections import defaultdict
 import io
 import base64
+import json
 
 # Language dictionary for internationalization
 LANGUAGES = {
@@ -131,45 +132,67 @@ LANGUAGES = {
 @st.cache_data(ttl=3600)  # Cache for 1 hour
 def load_data():
     """Load course data from Parquet/Excel file with caching"""
+    df = None
+    loaded_from_parquet = False
+    
     # Try Parquet first (10x faster)
     try:
         df = pd.read_parquet("courses.parquet")
-        return df
+        loaded_from_parquet = True
     except FileNotFoundError:
         pass
     
-    # Fallback to Excel
-    try:
-        df = pd.read_excel("courses.xlsx")
-    except FileNotFoundError:
+    if df is None:
+        # Fallback to Excel
         try:
-            df = pd.read_excel("课表信息汇总.xlsx")
+            df = pd.read_excel("courses.xlsx")
         except FileNotFoundError:
-            return None
-    
-    # Process the data according to requirements
-    # Merge rows with same Course ID + Class ID
-    grouped = df.groupby(['课程号', '班号'], as_index=False)
-    
-    processed_data = []
-    for _, group in grouped:
-        row = group.iloc[0].copy()
+            try:
+                df = pd.read_excel("课表信息汇总.xlsx")
+            except FileNotFoundError:
+                return None
         
-        # Concatenate Target Audience (修读对象)
-        if len(group) > 1:
-            row['修读对象'] = '，'.join(group['修读对象'].astype(str).unique())
+        # Process the data according to requirements
+        # Merge rows with same Course ID + Class ID using optimized aggregation
+        agg_funcs = {col: 'first' for col in df.columns if col not in ['课程号', '班号', '修读对象']}
+        agg_funcs['修读对象'] = lambda x: '，'.join(x.astype(str).unique())
         
-        processed_data.append(row)
+        # Use groupby().agg() which is much faster than iterating
+        df = df.groupby(['课程号', '班号'], as_index=False).agg(agg_funcs)
     
-    processed_df = pd.DataFrame(processed_data)
+    # Preprocess time data and helper columns (Integrated here for persistence)
+    # 1. Parse Time
+    if '_parsed_time' not in df.columns:
+        # Compute parsed time
+        df['_parsed_time'] = df['上课时间'].apply(lambda x: parse_time(x) if pd.notna(x) else [])
+    elif loaded_from_parquet:
+        # If loaded from parquet, it might be JSON string
+        if not df.empty and isinstance(df['_parsed_time'].iloc[0], str):
+            try:
+                df['_parsed_time'] = df['_parsed_time'].apply(json.loads)
+            except Exception:
+                # Fallback if parsing fails
+                df['_parsed_time'] = df['上课时间'].apply(lambda x: parse_time(x) if pd.notna(x) else [])
+
+    # 2. Lowercase helpers
+    if '_dept_lower' not in df.columns:
+        df['_dept_lower'] = df['院系'].astype(str).str.lower()
     
-    # Auto-save as Parquet for next time
-    try:
-        processed_df.to_parquet("courses.parquet", compression='snappy', index=False)
-    except Exception:
-        pass  # Silently fail if can't save
+    if '_course_name_lower' not in df.columns:
+        df['_course_name_lower'] = df['课程名'].astype(str).str.lower()
     
-    return processed_df
+    # Auto-save as Parquet for next time if not loaded from it
+    # We save the version WITH parsed times (serialized)
+    if not loaded_from_parquet:
+        try:
+            save_df = df.copy()
+            # Serialize list/dict columns to JSON string for Parquet storage
+            save_df['_parsed_time'] = save_df['_parsed_time'].apply(json.dumps)
+            save_df.to_parquet("courses.parquet", compression='snappy', index=False)
+        except Exception:
+            pass  # Silently fail if can't save
+    
+    return df
 
 def generate_sample_data():
     """Generate sample course data for demonstration"""
@@ -203,21 +226,10 @@ def generate_sample_data():
     }
     return pd.DataFrame(sample_data)
 
-@st.cache_data
-def preprocess_course_times(df):
-    """预处理所有课程的时间信息，避免重复解析"""
-    if df is None or df.empty:
-        return df
-    
-    # 为DataFrame添加解析后的时间列
-    df_copy = df.copy()
-    df_copy['_parsed_time'] = df_copy['上课时间'].apply(lambda x: parse_time(x) if pd.notna(x) else [])
-    return df_copy
 
-@st.cache_data
 def parse_time(time_str):
     """
-    Parse time string into structured data (cached version)
+    Parse time string into structured data
     Format examples:
     - "周一1-2" (Every week)
     - "周二1-2单" (Odd weeks only)
@@ -268,19 +280,24 @@ def parse_time(time_str):
     
     return parsed_slots
 
-def check_conflict(new_course_time, selected_courses):
+def check_conflict(new_course, selected_courses):
     """
     Check if there's a time conflict between new course and selected courses
     Optimized with early exit strategy
     """
-    new_time_slots = parse_time(new_course_time)
+    if hasattr(new_course, 'to_dict'):
+        new_course = new_course.to_dict()
+    new_time_slots = (new_course.get('_parsed_time')
+                      if isinstance(new_course, dict) else None)
+    if not new_time_slots:
+        new_time_slots = parse_time(new_course['上课时间'])
     
     # Early exit if no time slots
     if not new_time_slots:
         return None
     
     for course in selected_courses:
-        existing_time_slots = parse_time(course['上课时间'])
+        existing_time_slots = course.get('_parsed_time') or parse_time(course['上课时间'])
         
         # Early exit if no existing time slots
         if not existing_time_slots:
@@ -581,9 +598,6 @@ def main():
         if df is None:
             st.stop()
     
-    # Preprocess time data once (cached)
-    df = preprocess_course_times(df)
-    
     # Initialize session state for courses
     if 'selected_courses' not in st.session_state:
         st.session_state.selected_courses = []
@@ -618,7 +632,7 @@ def main():
     current_credits = sum(float(course.get('参考学分', 0)) for course in st.session_state.selected_courses)
     
     # Show all courses by default
-    filtered_df = df.copy()
+    filtered_df = df
     
     # Additional filters
     st.sidebar.header("Filters")
@@ -642,7 +656,8 @@ def main():
     # Course name search (Moved to main page)
     course_search = st.text_input(lang["search_course"], on_change=reset_page_callback)
     if course_search:
-        filtered_df = filtered_df[filtered_df['课程名'].str.contains(course_search, case=False, na=False, regex=False)]
+        s = course_search.lower()
+        filtered_df = filtered_df[filtered_df['_course_name_lower'].str.contains(s, na=False, regex=False)]
 
  # --- Pagination Logic ---
     courses_per_page = 10
@@ -725,7 +740,7 @@ def main():
                     # The button lives here, vertically centered by the column setting
                     # use_container_width=True makes it fill the right side neatly
                     if st.button(lang["select"], key=f"sel_{idx}_{row['课程号']}", use_container_width=True):
-                        conflict_course = check_conflict(row['上课时间'], st.session_state.selected_courses)
+                        conflict_course = check_conflict(row, st.session_state.selected_courses)
                         
                         if conflict_course:
                             st.toast(f"❌ {lang['conflict_detected']} {conflict_course}", icon='⚠️')
