@@ -131,11 +131,11 @@ LANGUAGES = {
 
 @st.cache_data(ttl=3600)  # Cache for 1 hour
 def load_data():
-    """Load course data from Parquet/Excel file with caching"""
+    """Load course data from Parquet file with caching"""
     df = None
     loaded_from_parquet = False
     
-    # Try Parquet first (10x faster)
+    # Try Parquet first (Only source)
     try:
         df = pd.read_parquet("courses.parquet")
         loaded_from_parquet = True
@@ -143,22 +143,7 @@ def load_data():
         pass
     
     if df is None:
-        # Fallback to Excel
-        try:
-            df = pd.read_excel("courses.xlsx")
-        except FileNotFoundError:
-            try:
-                df = pd.read_excel("课表信息汇总.xlsx")
-            except FileNotFoundError:
-                return None
-        
-        # Process the data according to requirements
-        # Merge rows with same Course ID + Class ID using optimized aggregation
-        agg_funcs = {col: 'first' for col in df.columns if col not in ['课程号', '班号', '修读对象']}
-        agg_funcs['修读对象'] = lambda x: '，'.join(x.astype(str).unique())
-        
-        # Use groupby().agg() which is much faster than iterating
-        df = df.groupby(['课程号', '班号'], as_index=False).agg(agg_funcs)
+        return None
     
     # Preprocess time data and helper columns (Integrated here for persistence)
     # 1. Parse Time
@@ -181,16 +166,20 @@ def load_data():
     if '_course_name_lower' not in df.columns:
         df['_course_name_lower'] = df['课程名'].astype(str).str.lower()
     
-    # Auto-save as Parquet for next time if not loaded from it
+    # Auto-save as Parquet for next time if needed (e.g. if we computed columns)
     # We save the version WITH parsed times (serialized)
-    if not loaded_from_parquet:
+    # Although we only read from parquet, if the input parquet didn't have parsed times,
+    # we might want to save it back to optimize next load.
+    if loaded_from_parquet and ('_parsed_time' not in df.columns or '_dept_lower' not in df.columns):
         try:
             save_df = df.copy()
             # Serialize list/dict columns to JSON string for Parquet storage
-            save_df['_parsed_time'] = save_df['_parsed_time'].apply(json.dumps)
+            # Check if it needs serialization (if it's not string already)
+            if not isinstance(save_df['_parsed_time'].iloc[0], str):
+                 save_df['_parsed_time'] = save_df['_parsed_time'].apply(json.dumps)
             save_df.to_parquet("courses.parquet", compression='snappy', index=False)
         except Exception:
-            pass  # Silently fail if can't save
+            pass
     
     return df
 
@@ -581,19 +570,25 @@ def main():
     df = load_data()
     
     if df is None:
-        st.warning(lang["file_not_found"])
+        st.warning(lang["file_not_found"].replace("courses.xlsx", "courses.parquet"))
         
         col1, col2 = st.columns(2)
         with col1:
-            uploaded_file = st.file_uploader(lang["upload_file"], type=['xlsx'])
-            if uploaded_file is not None:
-                df = pd.read_excel(uploaded_file)
+            # Removed xlsx uploader as requested
+            st.info("Please place 'courses.parquet' in the application directory.")
         
         with col2:
             if st.button(lang["generate_sample"]):
                 df = generate_sample_data()
                 # Save to file for future use
-                df.to_excel("courses.xlsx", index=False)
+                try:
+                    save_df = df.copy()
+                    # Preprocess before saving mock data
+                    save_df['_parsed_time'] = save_df['上课时间'].apply(lambda x: parse_time(x) if pd.notna(x) else [])
+                    save_df['_parsed_time'] = save_df['_parsed_time'].apply(json.dumps)
+                    save_df.to_parquet("courses.parquet", compression='snappy', index=False)
+                except Exception:
+                    pass
         
         if df is None:
             st.stop()
