@@ -30,6 +30,13 @@ from collections import defaultdict
 import io
 import base64
 import json
+import gc
+
+# Enable Copy-on-Write for Pandas (Memory Optimization)
+try:
+    pd.options.mode.copy_on_write = True
+except ImportError:
+    pass  # Pandas version might be too old
 
 # Language dictionary for internationalization
 LANGUAGES = {
@@ -129,7 +136,7 @@ LANGUAGES = {
     }
 }
 
-@st.cache_data(ttl=3600)  # Cache for 1 hour
+@st.cache_resource(ttl=3600)  # Use cache_resource for shared read-only data (saves RAM)
 def load_data():
     """Load course data from Parquet file with caching"""
     df = None
@@ -145,41 +152,48 @@ def load_data():
     if df is None:
         return None
     
-    # Preprocess time data and helper columns (Integrated here for persistence)
-    # 1. Parse Time
-    if '_parsed_time' not in df.columns:
-        # Compute parsed time
-        df['_parsed_time'] = df['上课时间'].apply(lambda x: parse_time(x) if pd.notna(x) else [])
-    elif loaded_from_parquet:
-        # If loaded from parquet, it might be JSON string
-        if not df.empty and isinstance(df['_parsed_time'].iloc[0], str):
-            try:
-                df['_parsed_time'] = df['_parsed_time'].apply(json.loads)
-            except Exception:
-                # Fallback if parsing fails
-                df['_parsed_time'] = df['上课时间'].apply(lambda x: parse_time(x) if pd.notna(x) else [])
-
-    # 2. Lowercase helpers
-    if '_dept_lower' not in df.columns:
-        df['_dept_lower'] = df['院系'].astype(str).str.lower()
+    # Process the data according to requirements
+    # 1. Convert columns to category for memory optimization
+    categorical_cols = ['院系', '班号', '课程类别', '学年学期', '表格类型', '内部学期']
+    for col in categorical_cols:
+        if col in df.columns:
+            df[col] = df[col].astype('category')
+            
+    # 2. Optimize numeric types
+    # Credits can be integers if no .5 exists, but usually credits can be 0.5, 1.5 etc.
+    # User requested integers, but we must be safe. Let's check if we can downcast.
+    # If all are integers, we use int8/int16. Otherwise float32.
     
+    numeric_cols = ['参考学分', '周学时', '总学时']
+    for col in numeric_cols:
+        if col in df.columns:
+            # First coerce to numeric
+            s = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            
+            # Check if all values are effectively integers (e.g. 2.0, 3.0)
+            is_integer = np.all(np.mod(s, 1) == 0)
+            
+            if is_integer:
+                # Safe to convert to integer (int16 is sufficient for credits)
+                df[col] = s.astype('int16')
+            else:
+                # Must keep as float, but float32 is enough
+                df[col] = s.astype('float32')
+
+    # Preprocess helper columns
+    # We NO LONGER pre-compute '_parsed_time' to save significant RAM.
+    # It will be computed on-demand when a course is selected.
+
+    # Lowercase helper for search (kept for speed)
     if '_course_name_lower' not in df.columns:
         df['_course_name_lower'] = df['课程名'].astype(str).str.lower()
     
-    # Auto-save as Parquet for next time if needed (e.g. if we computed columns)
-    # We save the version WITH parsed times (serialized)
-    # Although we only read from parquet, if the input parquet didn't have parsed times,
-    # we might want to save it back to optimize next load.
-    if loaded_from_parquet and ('_parsed_time' not in df.columns or '_dept_lower' not in df.columns):
-        try:
-            save_df = df.copy()
-            # Serialize list/dict columns to JSON string for Parquet storage
-            # Check if it needs serialization (if it's not string already)
-            if not isinstance(save_df['_parsed_time'].iloc[0], str):
-                 save_df['_parsed_time'] = save_df['_parsed_time'].apply(json.dumps)
-            save_df.to_parquet("courses.parquet", compression='snappy', index=False)
-        except Exception:
-            pass
+    # Auto-save logic removed as we don't want to save derived columns or modify the source
+    # unless it's strictly necessary. The original requirement was "keep import entry parquet only".
+    # Since we are optimizing RAM, we don't want to bloat the parquet with _parsed_time either.
+    
+    # Force garbage collection after heavy loading
+    gc.collect()
     
     return df
 
@@ -561,7 +575,7 @@ def main():
     # Add cache clear button in sidebar
     with st.sidebar:
         if st.button("🔄 " + ("清除缓存" if language == "zh" else "Clear Cache")):
-            st.cache_data.clear()
+            st.cache_resource.clear()
             st.session_state.current_page = 1 # Reset page on cache clear
             st.success("✓ " + ("缓存已清除" if language == "zh" else "Cache cleared"))
             st.rerun()
@@ -583,9 +597,8 @@ def main():
                 # Save to file for future use
                 try:
                     save_df = df.copy()
-                    # Preprocess before saving mock data
-                    save_df['_parsed_time'] = save_df['上课时间'].apply(lambda x: parse_time(x) if pd.notna(x) else [])
-                    save_df['_parsed_time'] = save_df['_parsed_time'].apply(json.dumps)
+                    # No need to pre-compute parsed_time for saving anymore
+                    # Just save the raw data
                     save_df.to_parquet("courses.parquet", compression='snappy', index=False)
                 except Exception:
                     pass
@@ -741,8 +754,9 @@ def main():
                             st.toast(f"❌ {lang['conflict_detected']} {conflict_course}", icon='⚠️')
                         else:
                             course_dict = row.to_dict()
-                            if '_parsed_time' in row:
-                                course_dict['_parsed_time'] = row['_parsed_time']
+                            # Parse time on demand since we removed the pre-computed column
+                            if '_parsed_time' not in course_dict or pd.isna(course_dict['_parsed_time']):
+                                course_dict['_parsed_time'] = parse_time(course_dict['上课时间'])
                             st.session_state.selected_courses.append(course_dict)
                             st.toast(f"✅ {lang['no_conflict']}", icon='🎉')
                             st.rerun()
