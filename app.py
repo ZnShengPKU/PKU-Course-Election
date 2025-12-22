@@ -193,6 +193,11 @@ def load_data():
     # Lowercase helper for search (kept for speed)
     if '_course_name_lower' not in df.columns:
         df['_course_name_lower'] = df['课程名'].astype(str).str.lower()
+    if '_instructor_lower' not in df.columns:
+        if '授课教师' in df.columns:
+            df['_instructor_lower'] = df['授课教师'].astype(str).str.lower()
+        else:
+            df['_instructor_lower'] = ""
     
     # Auto-save logic removed as we don't want to save derived columns or modify the source
     # unless it's strictly necessary. The original requirement was "keep import entry parquet only".
@@ -718,8 +723,21 @@ def main():
     # Course name search (Moved to main page)
     course_search = st.text_input(lang["search_course"], on_change=reset_page_callback)
     if course_search:
-        s = course_search.lower()
-        filtered_df = filtered_df[filtered_df['_course_name_lower'].str.contains(s, na=False, regex=False)]
+        keywords = [k for k in course_search.lower().split() if k]
+        if keywords:
+            mask = pd.Series(True, index=filtered_df.index)
+            course_name_s = filtered_df['_course_name_lower']
+            instructor_s = (
+                filtered_df['_instructor_lower']
+                if '_instructor_lower' in filtered_df.columns
+                else pd.Series("", index=filtered_df.index)
+            )
+            for k in keywords:
+                mask &= (
+                    course_name_s.str.contains(k, na=False, regex=False)
+                    | instructor_s.str.contains(k, na=False, regex=False)
+                )
+            filtered_df = filtered_df[mask]
 
  # --- Pagination Logic ---
     courses_per_page = 10
