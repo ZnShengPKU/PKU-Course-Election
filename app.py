@@ -56,6 +56,9 @@ LANGUAGES = {
         "single_degree": "Single Degree (Max 25 Credits)",
         "double_degree": "Double Degree (Max 30 Credits)",
         "filter_by_department": "Filter by Course Department",
+        "filter_by_weekday": "Filter by Weekday",
+        "filter_time_start": "Start Period",
+        "filter_time_end": "End Period",
         "search_course": "Search by Course Name",
         "timetable": "Timetable",
         "current_credits": "Current Credits",
@@ -103,6 +106,9 @@ LANGUAGES = {
         "single_degree": "单学位（最多25学分）",
         "double_degree": "双学位（最多30学分）",
         "filter_by_department": "按院系筛选",
+        "filter_by_weekday": "按星期筛选",
+        "filter_time_start": "起始节次",
+        "filter_time_end": "结束节次",
         "search_course": "搜索课程名",
         "timetable": "课程表",
         "current_credits": "当前学分",
@@ -282,6 +288,19 @@ def parse_time(time_str):
                 continue  # Skip malformed entries
     
     return parsed_slots
+
+
+def course_matches_day_time(time_str, selected_days, start_period, end_period):
+    time_slots = parse_time(time_str)
+    if not time_slots:
+        return False
+    for slot in time_slots:
+        if slot["day"] not in selected_days:
+            continue
+        if slot["end_period"] < start_period or slot["start_period"] > end_period:
+            continue
+        return True
+    return False
 
 def check_conflict(new_course, selected_courses):
     """
@@ -660,6 +679,41 @@ def main():
     
     if dept_filter != lang["all_departments"]:
         filtered_df = filtered_df[filtered_df['院系'] == dept_filter]
+
+    days_list = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
+    weekday_filter = st.sidebar.multiselect(
+        lang["filter_by_weekday"],
+        options=days_list,
+        default=days_list,
+        format_func=lambda d: lang["week_" + d],
+        on_change=reset_page_callback
+    )
+
+    start_period = st.sidebar.number_input(
+        lang["filter_time_start"],
+        min_value=1,
+        max_value=12,
+        value=1,
+        step=1,
+        on_change=reset_page_callback
+    )
+
+    end_period = st.sidebar.number_input(
+        lang["filter_time_end"],
+        min_value=int(start_period),
+        max_value=12,
+        value=12 if int(start_period) <= 12 else int(start_period),
+        step=1,
+        on_change=reset_page_callback
+    )
+
+    selected_days_set = set(weekday_filter)
+    if selected_days_set != set(days_list) or int(start_period) != 1 or int(end_period) != 12:
+        filtered_df = filtered_df[
+            filtered_df["上课时间"].apply(
+                lambda t: course_matches_day_time(t, selected_days_set, int(start_period), int(end_period))
+            )
+        ]
     
     # Course name search (Moved to main page)
     course_search = st.text_input(lang["search_course"], on_change=reset_page_callback)
