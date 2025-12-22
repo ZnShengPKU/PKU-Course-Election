@@ -30,6 +30,7 @@ from collections import defaultdict
 import io
 import base64
 import json
+import hashlib
 import gc
 
 # Enable Copy-on-Write for Pandas (Memory Optimization)
@@ -88,7 +89,14 @@ LANGUAGES = {
         "all_courses": "All Courses",
         "selected_courses": "Selected Courses",
         "export_timetable": "Export Timetable",
-        "export_success": "Timetable exported successfully!"
+        "export_success": "Timetable exported successfully!",
+        "backup_restore": "Backup / Restore",
+        "export_selected_json": "Export Selected (JSON)",
+        "import_selected_json": "Import Selected (JSON)",
+        "import_selected_button": "Restore Selection",
+        "import_invalid_json": "Invalid JSON file",
+        "import_done": "Selection restored",
+        "import_partial": "Some courses were not found"
     },
     "zh": {
         "app_title": "模拟选课系统",
@@ -138,7 +146,14 @@ LANGUAGES = {
         "all_courses": "所有课程",
         "selected_courses": "已选课程",
         "export_timetable": "导出课程表",
-        "export_success": "课程表导出成功！"
+        "export_success": "课程表导出成功！",
+        "backup_restore": "备份 / 恢复",
+        "export_selected_json": "导出已选课程（JSON）",
+        "import_selected_json": "导入已选课程（JSON）",
+        "import_selected_button": "恢复选课",
+        "import_invalid_json": "JSON 文件不合法",
+        "import_done": "已恢复选课",
+        "import_partial": "部分课程未找到"
     }
 }
 
@@ -306,6 +321,76 @@ def course_matches_day_time(time_str, selected_days, start_period, end_period):
             continue
         return True
     return False
+
+
+def export_selected_courses_json(selected_courses):
+    items = []
+    seen = set()
+    for c in selected_courses:
+        course_id = str(c.get("课程号", "")).strip()
+        class_id = str(c.get("班号", "")).strip()
+        if not course_id or not class_id:
+            continue
+        key = (course_id, class_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(
+            {
+                "课程号": course_id,
+                "班号": class_id,
+                "课程名": str(c.get("课程名", "")).strip(),
+                "授课教师": str(c.get("授课教师", "")).strip(),
+            }
+        )
+    payload = {"version": 1, "courses": items}
+    return json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+
+
+def import_selected_courses_json(df, raw_bytes):
+    try:
+        payload = json.loads(raw_bytes.decode("utf-8"))
+    except Exception:
+        return None, None
+
+    if isinstance(payload, list):
+        courses_list = payload
+    elif isinstance(payload, dict) and isinstance(payload.get("courses"), list):
+        courses_list = payload["courses"]
+    else:
+        return None, None
+
+    if not {"课程号", "班号"}.issubset(set(df.columns)):
+        return [], [{"课程号": x.get("课程号"), "班号": x.get("班号")} for x in courses_list if isinstance(x, dict)]
+
+    index_df = df.set_index(["课程号", "班号"], drop=False)
+    restored = []
+    missing = []
+    seen = set()
+
+    for item in courses_list:
+        if not isinstance(item, dict):
+            continue
+        course_id = str(item.get("课程号", "")).strip()
+        class_id = str(item.get("班号", "")).strip()
+        if not course_id or not class_id:
+            continue
+        key = (course_id, class_id)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        try:
+            row = index_df.loc[key]
+            if isinstance(row, pd.DataFrame):
+                row = row.iloc[0]
+            course_dict = row.to_dict()
+            course_dict["_parsed_time"] = parse_time(course_dict.get("上课时间"))
+            restored.append(course_dict)
+        except Exception:
+            missing.append({"课程号": course_id, "班号": class_id})
+
+    return restored, missing
 
 def check_conflict(new_course, selected_courses):
     """
@@ -1029,6 +1114,36 @@ def main():
                 file_name="课程表.xlsx" if language == "zh" else "timetable.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
+
+        st.subheader(lang["backup_restore"])
+        selected_json = export_selected_courses_json(st.session_state.selected_courses)
+        st.download_button(
+            label=lang["export_selected_json"],
+            data=selected_json,
+            file_name="已选课程.json" if language == "zh" else "selected_courses.json",
+            mime="application/json"
+        )
+        uploaded_json = st.file_uploader(
+            label=lang["import_selected_json"],
+            type=["json"],
+            key="selected_courses_json_uploader"
+        )
+        if uploaded_json is not None:
+            raw = uploaded_json.getvalue()
+            sig = hashlib.sha256(raw).hexdigest()
+            if st.session_state.get("selected_courses_import_sig") != sig:
+                st.session_state.selected_courses_import_sig = sig
+                restored, missing = import_selected_courses_json(df, raw)
+                if restored is None:
+                    st.toast(lang["import_invalid_json"], icon="⚠️")
+                else:
+                    st.session_state.selected_courses = restored
+                    st.session_state.timetable_cache = None
+                    st.session_state.timetable_courses_hash = None
+                    st.toast(f"✅ {lang['import_done']}: {len(restored)}", icon="🎉")
+                    if missing:
+                        st.toast(f"⚠️ {lang['import_partial']}: {len(missing)}", icon="⚠️")
+                    st.rerun()
         
         # Display credit counter immediately after timetable
         st.subheader(f"{lang['current_credits']}: {current_credits} / {lang['max_credits']}: {max_credits}")
@@ -1152,6 +1267,36 @@ def main():
             {message_text}
         </div>
         ''', unsafe_allow_html=True)
+
+        st.subheader(lang["backup_restore"])
+        selected_json = export_selected_courses_json(st.session_state.selected_courses)
+        st.download_button(
+            label=lang["export_selected_json"],
+            data=selected_json,
+            file_name="已选课程.json" if language == "zh" else "selected_courses.json",
+            mime="application/json"
+        )
+        uploaded_json = st.file_uploader(
+            label=lang["import_selected_json"],
+            type=["json"],
+            key="selected_courses_json_uploader_empty"
+        )
+        if uploaded_json is not None:
+            raw = uploaded_json.getvalue()
+            sig = hashlib.sha256(raw).hexdigest()
+            if st.session_state.get("selected_courses_import_sig") != sig:
+                st.session_state.selected_courses_import_sig = sig
+                restored, missing = import_selected_courses_json(df, raw)
+                if restored is None:
+                    st.toast(lang["import_invalid_json"], icon="⚠️")
+                else:
+                    st.session_state.selected_courses = restored
+                    st.session_state.timetable_cache = None
+                    st.session_state.timetable_courses_hash = None
+                    st.toast(f"✅ {lang['import_done']}: {len(restored)}", icon="🎉")
+                    if missing:
+                        st.toast(f"⚠️ {lang['import_partial']}: {len(missing)}", icon="⚠️")
+                    st.rerun()
         
         # Display credit counter immediately after timetable even when empty
         st.subheader(f"{lang['current_credits']}: {current_credits} / {lang['max_credits']}: {max_credits}")
