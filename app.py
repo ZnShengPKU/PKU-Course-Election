@@ -678,6 +678,8 @@ def main():
         format_func=lambda x: "中文" if x == "zh" else "English"
     )
     lang = LANGUAGES[language]
+    timetable_header_bg = "var(--secondary-background-color)"
+    timetable_header_fg = "var(--text-color)"
     
     st.title(lang["app_title"])
     
@@ -1061,8 +1063,8 @@ def main():
                 ]},
                 # 2. Header Styling
                 {'selector': 'th', 'props': [
-                    ('background-color', '#262730'),
-                    ('color', 'white'),
+                    ('background-color', timetable_header_bg),
+                    ('color', timetable_header_fg),
                     ('text-align', 'center'),
                     ('vertical-align', 'middle')
                 ]},
@@ -1212,8 +1214,8 @@ def main():
                 ]},
                 # 2. Header Styling
                 {'selector': 'th', 'props': [
-                    ('background-color', '#262730'),
-                    ('color', 'white'),
+                    ('background-color', timetable_header_bg),
+                    ('color', timetable_header_fg),
                     ('text-align', 'center'),
                     ('vertical-align', 'middle')
                 ]}
